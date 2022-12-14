@@ -1,0 +1,26 @@
+[
+	{
+	  "ParameterKey": "EnvironmentName",
+	  "ParameterValue": "Udagram"
+	},
+    {
+      "ParameterKey": "ImageID",
+	  "ParameterValue": "ami-0e081ed4ce61c1fb2"
+
+    },
+    {
+      "ParameterKey": "AdminIP",
+	  "ParameterValue": "102.41.62.193/32"
+
+    },
+    {
+      "ParameterKey": "EC2KeyName",
+	  "ParameterValue": "Access_Key"
+    },
+    {
+      "ParameterKey": "JumpboxKeyName",
+	  "ParameterValue": "Access_Key"
+    }
+
+
+]

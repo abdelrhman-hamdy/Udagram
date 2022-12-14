@@ -1,0 +1,247 @@
+Parameters:
+  EnvironmentName:
+    Description: An environment name that will be prefixed to resource names
+    Type: String
+
+  ImageID:
+    Description: the ImageID in launch configuration
+    Type: String
+
+  AdminIP: 
+        Description: The public IP of the Admin  
+        Type: String
+
+  EC2KeyName: 
+        Description: the Access key of EC2 instances
+        Type: String
+
+  JumpboxKeyName: 
+        Description: the Access key of Jumpbox
+        Type: String
+
+
+Resources:
+  ServerSecGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Secuirty Group For EC2 instances
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 10.0.0.0/16
+        #- IpProtocol: tcp
+        #  FromPort: 22
+        #  ToPort: 22    # Uncomment if you want JumpBox to access EC2 
+        #  CidrIp:   10.0.0.0/16
+
+
+
+      VpcId:
+        Fn::ImportValue:
+          !Sub ${EnvironmentName}-VPCID
+
+
+  LBSecGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Secuirty Group For LoadBalancer
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 10.0.0.0/16
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      VpcId:
+        Fn::ImportValue:
+          !Sub ${EnvironmentName}-VPCID
+
+
+
+
+  S3BucketsInstanceProfile:
+      Type: AWS::IAM::InstanceProfile
+      Properties:
+        Path: "/"
+        Roles:
+        - Ref: S3BucketsRole
+  S3BucketsRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - ec2.amazonaws.com
+            Action:
+            - sts:AssumeRole
+        Path: "/"
+        Policies:
+          - PolicyName: root
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action: 's3:*'
+                  Resource: '*'
+       
+
+
+  LaunchConfig:
+      Type: AWS::AutoScaling::LaunchConfiguration
+      Properties:
+        ImageId: !Ref ImageID  
+        SecurityGroups:
+          - !Ref ServerSecGroup
+        InstanceType: t2.medium
+        # KeyName : !Ref EC2KeyName  # uncomment and choose the right keyname if you want to access the EC2 instances using Jumpbox
+        BlockDeviceMappings:
+        - DeviceName: /dev/sdc
+          Ebs:
+              VolumeSize: '10'
+              VolumeType: gp3
+        IamInstanceProfile: !Ref S3BucketsInstanceProfile
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            apt-get update -y
+            apt-get install apache2 -y
+            systemctl start apache2.service
+            apt-get install awscli -y
+            sudo su 
+            aws s3 cp s3://my678628437585bucket/index.html /var/www/html/index.html
+            
+
+  ASG:
+      Type: AWS::AutoScaling::AutoScalingGroup
+      Properties:
+        LaunchConfigurationName : !Ref LaunchConfig
+        MaxSize: '4'
+        MinSize: '4'
+        DesiredCapacity: '4'
+        VPCZoneIdentifier:
+        -  Fn::ImportValue:
+            !Sub "${EnvironmentName}-PrivateSubnets"
+        TargetGroupARNs:
+        - Ref: WebAppTargetGroup
+
+  ApplicationLoadBalancer:
+        Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+        Properties:
+            Type: application
+            Subnets:
+              -  Fn::ImportValue: !Sub ${EnvironmentName}-PublicSubnet1
+              -  Fn::ImportValue: !Sub ${EnvironmentName}-PublicSubnet2
+            SecurityGroups:
+              - !Ref LBSecGroup
+            IpAddressType: ipv4
+          
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn:
+          Ref: WebAppTargetGroup
+      LoadBalancerArn:
+        Ref: ApplicationLoadBalancer
+      Port: '80'
+      Protocol: HTTP
+  ALBListenerRule:
+      Type: AWS::ElasticLoadBalancingV2::ListenerRule
+      Properties:
+        Actions:
+        - Type: forward
+          TargetGroupArn: !Ref 'WebAppTargetGroup'
+        Conditions:
+        - Field: path-pattern
+          Values: [/]
+        ListenerArn: !Ref 'Listener'
+        Priority: 1
+  WebAppTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 8
+      HealthyThresholdCount: 2
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 5
+      VpcId: 
+        Fn::ImportValue:
+          Fn::Sub: "${EnvironmentName}-VPCID"
+
+
+  JumpBoxSecGroup:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+        GroupDescription: Allow SSH to JumpBox From admin IP
+        VpcId:
+          Fn::ImportValue: !Sub "${EnvironmentName}-VPCID"
+            
+        SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp:  !Ref AdminIP
+        
+        SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 10.0.0.0/16
+
+  JumpBox : 
+    Type: AWS::EC2::Instance
+    Properties:
+      Tags: 
+        - Key : Name  
+          Value : "JumpBox"
+      ImageId: ami-0439517b5e436bdab
+      KeyName: !Ref JumpboxKeyName 
+      InstanceType: t2.micro
+      BlockDeviceMappings:
+        - DeviceName: "/dev/sdk"
+          Ebs:
+            VolumeSize: '10'
+            
+      NetworkInterfaces: 
+        - AssociatePublicIpAddress: "true"
+          "DeviceIndex": "0"
+          GroupSet:
+          - Ref : 'JumpBoxSecGroup'
+          
+          SubnetId:
+           'Fn::ImportValue': 
+                'Fn::Sub': "${EnvironmentName}-PublicSubnet1"
+                
+
+Outputs: 
+
+  LBDnsName: 
+        Description: the public URL of the loadbalancer
+        Value: !Join [ "", [ "http://", !GetAtt ApplicationLoadBalancer.DNSName ] ]
+        Export:
+          Name: !Sub ${EnvironmentName}-URL
+
+
+
+
+
+
+
+
+
+
+
+
